@@ -31,12 +31,7 @@ export class GmailGetHistoryService {
           maxResults: MESSAGING_GMAIL_USERS_HISTORY_MAX_RESULT,
           pageToken,
           startHistoryId: lastSyncHistoryId,
-          historyTypes: [
-            'messageAdded',
-            'messageDeleted',
-            'labelAdded',
-            'labelRemoved',
-          ],
+          historyTypes: ['messageAdded', 'messageDeleted', 'labelAdded'],
         })
         .catch((error) => {
           this.gmailMessageListFetchErrorHandler.handleError(error);
@@ -87,14 +82,10 @@ export class GmailGetHistoryService {
         const messagesDeleted = history.messagesDeleted?.map(
           (messageDeleted) => messageDeleted.message?.id || '',
         );
-        const labelsRemoved = history.labelsRemoved?.map(
-          (labelRemoved) => labelRemoved.message?.id || '',
-        );
 
         if (messagesAdded) acc.messagesAdded.push(...messagesAdded);
         if (labelsAdded) acc.messagesAdded.push(...labelsAdded);
         if (messagesDeleted) acc.messagesDeleted.push(...messagesDeleted);
-        if (labelsRemoved) acc.messagesDeleted.push(...labelsRemoved);
 
         return acc;
       },

@@ -91,12 +91,7 @@ describe('GmailGetHistoryService', () => {
 
       expect(list).toHaveBeenCalledWith(
         expect.objectContaining({
-          historyTypes: [
-            'messageAdded',
-            'messageDeleted',
-            'labelAdded',
-            'labelRemoved',
-          ],
+          historyTypes: ['messageAdded', 'messageDeleted', 'labelAdded'],
         }),
       );
     });
@@ -158,7 +153,7 @@ describe('GmailGetHistoryService', () => {
       expect(result.messagesDeleted).toEqual(['del1']);
     });
 
-    it('should include label mutations in extracted message IDs', async () => {
+    it('should include label additions and ignore label removals', async () => {
       const history: gmail_v1.Schema$History[] = [
         {
           labelsAdded: [{ message: { id: 'labelAdd1' } }],
@@ -169,7 +164,7 @@ describe('GmailGetHistoryService', () => {
       const result = await service.getMessageIdsFromHistory(history);
 
       expect(result.messagesAdded).toEqual(['labelAdd1']);
-      expect(result.messagesDeleted).toEqual(['labelDel1']);
+      expect(result.messagesDeleted).toEqual([]);
     });
 
     it('should deduplicate messages that appear in both lists', async () => {

@@ -21,6 +21,94 @@ export class GmailGetMessagesService {
     private readonly gmailMessagesImportErrorHandler: GmailMessagesImportErrorHandler,
   ) {}
 
+  private collectScopeInputs(
+    messages: MessageWithParticipants[],
+    messageChannel: Pick<
+      MessageChannelWorkspaceEntity,
+      'messageFolders' | 'messageFolderImportPolicy'
+    >,
+  ): {
+    messagesInDirectScope: MessageWithParticipants[];
+    directScopeMessageExternalIds: Set<string>;
+    threadExternalIdsToResolve: string[];
+  } {
+    const messagesInDirectScope = filterGmailMessagesByFolderPolicy(
+      messages,
+      messageChannel,
+    );
+
+    const directScopeMessageExternalIds = new Set(
+      messagesInDirectScope.map((message) => message.externalId),
+    );
+
+    const threadExternalIdsToResolve = Array.from(
+      new Set(
+        messages
+          .filter(
+            (message) => !directScopeMessageExternalIds.has(message.externalId),
+          )
+          .map((message) => message.messageThreadExternalId),
+      ),
+    );
+
+    return {
+      messagesInDirectScope,
+      directScopeMessageExternalIds,
+      threadExternalIdsToResolve,
+    };
+  }
+
+  private async resolveThreadScope(
+    batchedGmailClient: gmailV1.Gmail,
+    threadExternalIdsToResolve: string[],
+    messageChannel: Pick<
+      MessageChannelWorkspaceEntity,
+      'messageFolders' | 'messageFolderImportPolicy'
+    >,
+  ): Promise<Map<string, boolean>> {
+    const threadInScopeByExternalId = new Map<string, boolean>();
+
+    await Promise.all(
+      threadExternalIdsToResolve.map((threadExternalId) =>
+        batchedGmailClient.users.threads
+          .get({
+            userId: 'me',
+            id: threadExternalId,
+            format: 'metadata',
+          })
+          .then((response) => {
+            const threadMessages = (
+              response.data as gmailV1.Schema$Thread | null
+            )?.messages;
+
+            const threadMessagesForScope = (threadMessages ?? []).map(
+              (threadMessage, index) => ({
+                externalId: threadMessage.id ?? `${threadExternalId}-${index}`,
+                labelIds: threadMessage.labelIds,
+              }),
+            );
+
+            const threadInScope =
+              filterGmailMessagesByFolderPolicy(
+                threadMessagesForScope as MessageWithParticipants[],
+                messageChannel,
+              ).length > 0;
+
+            threadInScopeByExternalId.set(threadExternalId, threadInScope);
+          })
+          .catch((error) => {
+            this.gmailMessagesImportErrorHandler.handleError(
+              error,
+              threadExternalId,
+            );
+            threadInScopeByExternalId.set(threadExternalId, false);
+          }),
+      ),
+    );
+
+    return threadInScopeByExternalId;
+  }
+
   async getMessages(
     messageIds: string[],
     connectedAccount: Pick<
@@ -79,67 +167,20 @@ export class GmailGetMessagesService {
       })
       .filter(isDefined);
 
-    const messagesInDirectScope = filterGmailMessagesByFolderPolicy(
-      messages,
-      messageChannel,
-    );
-
-    const directScopeMessageExternalIds = new Set(
-      messagesInDirectScope.map((message) => message.externalId),
-    );
-
-    const threadExternalIdsToResolve = Array.from(
-      new Set(
-        messages
-          .filter(
-            (message) => !directScopeMessageExternalIds.has(message.externalId),
-          )
-          .map((message) => message.messageThreadExternalId),
-      ),
-    );
+    const {
+      messagesInDirectScope,
+      directScopeMessageExternalIds,
+      threadExternalIdsToResolve,
+    } = this.collectScopeInputs(messages, messageChannel);
 
     if (threadExternalIdsToResolve.length === 0) {
       return messagesInDirectScope;
     }
 
-    const threadInScopeByExternalId = new Map<string, boolean>();
-
-    await Promise.all(
-      threadExternalIdsToResolve.map((threadExternalId) =>
-        batchedGmailClient.users.threads
-          .get({
-            userId: 'me',
-            id: threadExternalId,
-            format: 'metadata',
-          })
-          .then((response) => {
-            const threadMessages = (
-              response.data as gmailV1.Schema$Thread | null
-            )?.messages;
-
-            const threadMessagesForScope = (threadMessages ?? []).map(
-              (threadMessage, index) => ({
-                externalId: threadMessage.id ?? `${threadExternalId}-${index}`,
-                labelIds: threadMessage.labelIds,
-              }),
-            );
-
-            const threadInScope =
-              filterGmailMessagesByFolderPolicy(
-                threadMessagesForScope as MessageWithParticipants[],
-                messageChannel,
-              ).length > 0;
-
-            threadInScopeByExternalId.set(threadExternalId, threadInScope);
-          })
-          .catch((error) => {
-            this.gmailMessagesImportErrorHandler.handleError(
-              error,
-              threadExternalId,
-            );
-            threadInScopeByExternalId.set(threadExternalId, false);
-          }),
-      ),
+    const threadInScopeByExternalId = await this.resolveThreadScope(
+      batchedGmailClient,
+      threadExternalIdsToResolve,
+      messageChannel,
     );
 
     return messages.filter(

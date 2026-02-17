@@ -31,58 +31,7 @@ export class GmailGetMessagesService {
     private readonly gmailMessagesImportErrorHandler: GmailMessagesImportErrorHandler,
   ) {}
 
-  private getMessagesInSyncScope(
-    messages: MessageWithParticipants[],
-    messageChannel: MessageChannelSyncScope,
-  ): MessageWithParticipants[] {
-    return filterGmailMessagesByFolderPolicy(messages, messageChannel);
-  }
-
-  private getMessageExternalIds(
-    messages: Pick<MessageWithParticipants, 'externalId'>[],
-  ): Set<string> {
-    return new Set(messages.map((message) => message.externalId));
-  }
-
-  private getThreadExternalIdsOutsideSyncScope(
-    messages: Pick<
-      MessageWithParticipants,
-      'externalId' | 'messageThreadExternalId'
-    >[],
-    messageExternalIdsInSyncScope: Set<string>,
-  ): string[] {
-    return Array.from(
-      new Set(
-        messages
-          .filter(
-            (message) => !messageExternalIdsInSyncScope.has(message.externalId),
-          )
-          .map((message) => message.messageThreadExternalId),
-      ),
-    );
-  }
-
-  private getThreadMessagesForScopeCheck(
-    thread: gmailV1.Schema$Thread | null | undefined,
-    threadExternalId: string,
-  ): MessageWithLabelIds[] {
-    return (thread?.messages ?? []).map((threadMessage, index) => ({
-      externalId: threadMessage.id ?? `${threadExternalId}-${index}`,
-      labelIds: threadMessage.labelIds ?? undefined,
-    }));
-  }
-
-  private isThreadInSyncScope(
-    threadMessages: MessageWithLabelIds[],
-    messageChannel: MessageChannelSyncScope,
-  ): boolean {
-    return (
-      filterGmailMessagesByFolderPolicy(threadMessages, messageChannel).length >
-      0
-    );
-  }
-
-  private async getThreadInSyncScopeByExternalIdMap(
+  private async getThreadInSyncScopeByExternalId(
     gmailClient: gmailV1.Gmail,
     threadExternalIdsToCheck: string[],
     messageChannel: MessageChannelSyncScope,
@@ -98,15 +47,26 @@ export class GmailGetMessagesService {
             format: 'metadata',
           })
           .then((response) => {
-            const threadMessagesForScopeCheck =
-              this.getThreadMessagesForScopeCheck(
-                response.data as gmailV1.Schema$Thread | null,
-                threadExternalId,
-              );
-            const threadIsInSyncScope = this.isThreadInSyncScope(
-              threadMessagesForScopeCheck,
-              messageChannel,
-            );
+            const threadMessages = (
+              response.data as gmailV1.Schema$Thread | null
+            )?.messages;
+
+            const threadMessagesForScopeCheck: MessageWithLabelIds[] = [];
+
+            for (const [index, threadMessage] of (
+              threadMessages ?? []
+            ).entries()) {
+              threadMessagesForScopeCheck.push({
+                externalId: threadMessage.id ?? `${threadExternalId}-${index}`,
+                labelIds: threadMessage.labelIds ?? undefined,
+              });
+            }
+
+            const threadIsInSyncScope =
+              filterGmailMessagesByFolderPolicy(
+                threadMessagesForScopeCheck,
+                messageChannel,
+              ).length > 0;
 
             threadInSyncScopeByExternalId.set(
               threadExternalId,
@@ -181,35 +141,51 @@ export class GmailGetMessagesService {
       })
       .filter(isDefined);
 
-    const messagesInSyncScope = this.getMessagesInSyncScope(
+    const messagesInSyncScope = filterGmailMessagesByFolderPolicy(
       messages,
       messageChannel,
     );
+    const messageExternalIdsInSyncScope = new Set<string>();
 
-    const messageExternalIdsInSyncScope =
-      this.getMessageExternalIds(messagesInSyncScope);
+    for (const message of messagesInSyncScope) {
+      messageExternalIdsInSyncScope.add(message.externalId);
+    }
 
-    const threadExternalIdsToCheck = this.getThreadExternalIdsOutsideSyncScope(
-      messages,
-      messageExternalIdsInSyncScope,
-    );
+    const threadExternalIdsToCheck = new Set<string>();
 
-    if (threadExternalIdsToCheck.length === 0) {
+    for (const message of messages) {
+      const messageIsInSyncScope = messageExternalIdsInSyncScope.has(
+        message.externalId,
+      );
+
+      if (!messageIsInSyncScope) {
+        threadExternalIdsToCheck.add(message.messageThreadExternalId);
+      }
+    }
+
+    if (threadExternalIdsToCheck.size === 0) {
       return messagesInSyncScope;
     }
 
     const threadInSyncScopeByExternalId =
-      await this.getThreadInSyncScopeByExternalIdMap(
+      await this.getThreadInSyncScopeByExternalId(
         batchedGmailClient,
-        threadExternalIdsToCheck,
+        Array.from(threadExternalIdsToCheck),
         messageChannel,
       );
 
-    return messages.filter(
-      (message) =>
+    const messagesToImport: MessageWithParticipants[] = [];
+
+    for (const message of messages) {
+      if (
         messageExternalIdsInSyncScope.has(message.externalId) ||
         threadInSyncScopeByExternalId.get(message.messageThreadExternalId) ===
-          true,
-    );
+          true
+      ) {
+        messagesToImport.push(message);
+      }
+    }
+
+    return messagesToImport;
   }
 }

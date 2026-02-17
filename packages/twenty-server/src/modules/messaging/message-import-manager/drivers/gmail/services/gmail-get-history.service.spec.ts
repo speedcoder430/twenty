@@ -72,6 +72,35 @@ describe('GmailGetHistoryService', () => {
       expect(mockClient.users.history.list).toHaveBeenCalledTimes(2);
     });
 
+    it('should request message and label history types by default', async () => {
+      const list = jest.fn().mockResolvedValue({
+        data: {
+          history: [],
+          historyId: '200',
+        },
+      });
+      const mockClient = {
+        users: {
+          history: {
+            list,
+          },
+        },
+      } as unknown as gmail_v1.Gmail;
+
+      await service.getHistory(mockClient, '100');
+
+      expect(list).toHaveBeenCalledWith(
+        expect.objectContaining({
+          historyTypes: [
+            'messageAdded',
+            'messageDeleted',
+            'labelAdded',
+            'labelRemoved',
+          ],
+        }),
+      );
+    });
+
     it('should throw SYNC_CURSOR_ERROR when historyId is expired', async () => {
       const error = { code: 404, message: 'Not found' };
       const mockClient = {
@@ -127,6 +156,20 @@ describe('GmailGetHistoryService', () => {
 
       expect(result.messagesAdded).toEqual(['add1']);
       expect(result.messagesDeleted).toEqual(['del1']);
+    });
+
+    it('should include label mutations in extracted message IDs', async () => {
+      const history: gmail_v1.Schema$History[] = [
+        {
+          labelsAdded: [{ message: { id: 'labelAdd1' } }],
+          labelsRemoved: [{ message: { id: 'labelDel1' } }],
+        },
+      ];
+
+      const result = await service.getMessageIdsFromHistory(history);
+
+      expect(result.messagesAdded).toEqual(['labelAdd1']);
+      expect(result.messagesDeleted).toEqual(['labelDel1']);
     });
 
     it('should deduplicate messages that appear in both lists', async () => {

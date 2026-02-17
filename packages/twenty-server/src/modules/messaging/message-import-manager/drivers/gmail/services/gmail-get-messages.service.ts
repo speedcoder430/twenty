@@ -79,11 +79,73 @@ export class GmailGetMessagesService {
       })
       .filter(isDefined);
 
-    const filteredMessages = filterGmailMessagesByFolderPolicy(
+    const messagesInDirectScope = filterGmailMessagesByFolderPolicy(
       messages,
       messageChannel,
     );
 
-    return filteredMessages;
+    const directScopeMessageExternalIds = new Set(
+      messagesInDirectScope.map((message) => message.externalId),
+    );
+
+    const threadExternalIdsToResolve = Array.from(
+      new Set(
+        messages
+          .filter(
+            (message) => !directScopeMessageExternalIds.has(message.externalId),
+          )
+          .map((message) => message.messageThreadExternalId),
+      ),
+    );
+
+    if (threadExternalIdsToResolve.length === 0) {
+      return messagesInDirectScope;
+    }
+
+    const threadInScopeByExternalId = new Map<string, boolean>();
+
+    await Promise.all(
+      threadExternalIdsToResolve.map((threadExternalId) =>
+        batchedGmailClient.users.threads
+          .get({
+            userId: 'me',
+            id: threadExternalId,
+            format: 'metadata',
+          })
+          .then((response) => {
+            const threadMessages = (
+              response.data as gmailV1.Schema$Thread | null
+            )?.messages;
+
+            const threadMessagesForScope = (threadMessages ?? []).map(
+              (threadMessage, index) => ({
+                externalId: threadMessage.id ?? `${threadExternalId}-${index}`,
+                labelIds: threadMessage.labelIds,
+              }),
+            );
+
+            const threadInScope =
+              filterGmailMessagesByFolderPolicy(
+                threadMessagesForScope as MessageWithParticipants[],
+                messageChannel,
+              ).length > 0;
+
+            threadInScopeByExternalId.set(threadExternalId, threadInScope);
+          })
+          .catch((error) => {
+            this.gmailMessagesImportErrorHandler.handleError(
+              error,
+              threadExternalId,
+            );
+            threadInScopeByExternalId.set(threadExternalId, false);
+          }),
+      ),
+    );
+
+    return messages.filter(
+      (message) =>
+        directScopeMessageExternalIds.has(message.externalId) ||
+        threadInScopeByExternalId.get(message.messageThreadExternalId) === true,
+    );
   }
 }

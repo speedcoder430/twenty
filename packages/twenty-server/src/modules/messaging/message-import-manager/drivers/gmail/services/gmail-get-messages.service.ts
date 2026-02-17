@@ -185,8 +185,10 @@ export class GmailGetMessagesService {
       messages,
       messageChannel,
     );
+
     const messageExternalIdsInSyncScope =
       this.getMessageExternalIds(messagesInSyncScope);
+
     const threadExternalIdsToCheck = this.getThreadExternalIdsOutsideSyncScope(
       messages,
       messageExternalIdsInSyncScope,

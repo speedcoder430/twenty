@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 import { isNonEmptyString } from '@sniptt/guards';
-import { google } from 'googleapis';
+import { google, type gmail_v1 as gmailV1 } from 'googleapis';
 
 import { OAuth2ClientManagerService } from 'src/modules/connected-account/oauth2-client-manager/services/oauth2-client-manager.service';
 import { type ConnectedAccountWorkspaceEntity } from 'src/modules/connected-account/standard-objects/connected-account.workspace-entity';
@@ -14,6 +14,7 @@ import {
   MessageImportDriverException,
   MessageImportDriverExceptionCode,
 } from 'src/modules/messaging/message-import-manager/drivers/exceptions/message-import-driver.exception';
+import { MESSAGING_GMAIL_FOLDERS_WITH_CATEGORY_EXCLUSIONS } from 'src/modules/messaging/message-import-manager/drivers/gmail/constants/messaging-gmail-folders-with-category-exclusions.constant';
 import { MESSAGING_GMAIL_USERS_MESSAGES_LIST_MAX_RESULT } from 'src/modules/messaging/message-import-manager/drivers/gmail/constants/messaging-gmail-users-messages-list-max-result.constant';
 import { GmailGetHistoryService } from 'src/modules/messaging/message-import-manager/drivers/gmail/services/gmail-get-history.service';
 import { GmailMessageListFetchErrorHandler } from 'src/modules/messaging/message-import-manager/drivers/gmail/services/gmail-message-list-fetch-error-handler.service';
@@ -29,6 +30,75 @@ export class GmailGetMessageListService {
     private readonly oAuth2ClientManagerService: OAuth2ClientManagerService,
     private readonly gmailMessageListFetchErrorHandler: GmailMessageListFetchErrorHandler,
   ) {}
+
+  private async getMessageExternalIdsIncludingThreadMessages({
+    gmailClient,
+    messageExternalIds,
+    seedThreadExternalIds,
+    messageFolders,
+    messageFolderImportPolicy,
+  }: {
+    gmailClient: gmailV1.Gmail;
+    messageExternalIds: string[];
+    seedThreadExternalIds: string[];
+    messageFolders: Pick<
+      MessageFolderWorkspaceEntity,
+      'name' | 'externalId' | 'isSynced' | 'parentFolderId'
+    >[];
+    messageFolderImportPolicy: MessageFolderImportPolicy;
+  }): Promise<string[]> {
+    if (
+      messageFolderImportPolicy !== MessageFolderImportPolicy.SELECTED_FOLDERS
+    ) {
+      return messageExternalIds;
+    }
+
+    const hasSyncedCustomFolder = messageFolders.some(
+      (folder) =>
+        folder.isSynced &&
+        isNonEmptyString(folder.externalId) &&
+        !MESSAGING_GMAIL_FOLDERS_WITH_CATEGORY_EXCLUSIONS.includes(
+          folder.externalId,
+        ),
+    );
+
+    if (!hasSyncedCustomFolder) {
+      return messageExternalIds;
+    }
+
+    const threadExternalIds = new Set(seedThreadExternalIds);
+
+    if (threadExternalIds.size === 0) {
+      return messageExternalIds;
+    }
+
+    const messageExternalIdsIncludingThreadMessages = new Set(
+      messageExternalIds,
+    );
+
+    for (const threadExternalId of threadExternalIds) {
+      const thread = await gmailClient.users.threads
+        .get({
+          userId: 'me',
+          id: threadExternalId,
+          format: 'metadata',
+          metadataHeaders: [],
+        })
+        .catch((error) => {
+          this.gmailMessageListFetchErrorHandler.handleError(error);
+
+          return null;
+        });
+
+      for (const threadMessage of thread?.data?.messages ?? []) {
+        if (isNonEmptyString(threadMessage.id)) {
+          messageExternalIdsIncludingThreadMessages.add(threadMessage.id);
+        }
+      }
+    }
+
+    return Array.from(messageExternalIdsIncludingThreadMessages);
+  }
 
   private async getMessageListWithoutCursor(
     connectedAccount: Pick<
@@ -57,6 +127,7 @@ export class GmailGetMessageListService {
     let hasMoreMessages = true;
 
     const messageExternalIds: string[] = [];
+    const seedThreadExternalIds = new Set<string>();
 
     const excludedSearchFilter = computeGmailExcludeSearchFilter(
       messageFolders,
@@ -89,8 +160,8 @@ export class GmailGetMessageListService {
           };
         });
 
-      const { messages } = messageList.data;
-      const hasMessages = messages && messages.length > 0;
+      const messagesFromPage = messageList.data.messages ?? [];
+      const hasMessages = messagesFromPage.length > 0;
 
       if (!hasMessages) {
         break;
@@ -99,8 +170,15 @@ export class GmailGetMessageListService {
       pageToken = messageList.data.nextPageToken ?? undefined;
       hasMoreMessages = !!pageToken;
 
-      // @ts-expect-error legacy noImplicitAny
-      messageExternalIds.push(...messages.map((message) => message.id));
+      for (const messageFromPage of messagesFromPage) {
+        if (isNonEmptyString(messageFromPage.id)) {
+          messageExternalIds.push(messageFromPage.id);
+        }
+
+        if (isNonEmptyString(messageFromPage.threadId)) {
+          seedThreadExternalIds.add(messageFromPage.threadId);
+        }
+      }
     }
 
     if (messageExternalIds.length === 0) {
@@ -114,6 +192,15 @@ export class GmailGetMessageListService {
         },
       ];
     }
+
+    const messageExternalIdsIncludingThreadMessages =
+      await this.getMessageExternalIdsIncludingThreadMessages({
+        gmailClient,
+        messageExternalIds,
+        seedThreadExternalIds: Array.from(seedThreadExternalIds),
+        messageFolders,
+        messageFolderImportPolicy: messageChannel.messageFolderImportPolicy,
+      });
 
     const firstMessageExternalId = messageExternalIds[0];
     const firstMessageContent = await gmailClient.users.messages
@@ -136,7 +223,7 @@ export class GmailGetMessageListService {
 
     return [
       {
-        messageExternalIds,
+        messageExternalIds: messageExternalIdsIncludingThreadMessages,
         nextSyncCursor,
         previousSyncCursor: '',
         messageExternalIdsToDelete: [],

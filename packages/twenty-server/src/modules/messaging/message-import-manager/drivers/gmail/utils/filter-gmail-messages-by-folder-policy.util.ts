@@ -3,7 +3,7 @@ import {
   MessageFolderImportPolicy,
 } from 'src/modules/messaging/common/standard-objects/message-channel.workspace-entity';
 import { MESSAGING_GMAIL_EXCLUDED_CATEGORY_LABELS } from 'src/modules/messaging/message-import-manager/drivers/gmail/constants/messaging-gmail-excluded-category-labels.constant';
-import { MESSAGING_GMAIL_FOLDERS_WITH_CATEGORY_EXCLUSIONS } from 'src/modules/messaging/message-import-manager/drivers/gmail/constants/messaging-gmail-folders-with-category-exclusions.constant';
+import { isGmailCustomLabel } from 'src/modules/messaging/message-import-manager/drivers/gmail/utils/is-gmail-custom-label.util';
 import { type MessageWithParticipants } from 'src/modules/messaging/message-import-manager/types/message';
 
 export const filterGmailMessagesByFolderPolicy = (
@@ -37,7 +37,7 @@ export const filterGmailMessagesByFolderPolicy = (
     const messageIsInSyncedCustomFolder = messageLabelIds.some(
       (labelId) =>
         syncedFolderExternalIds.includes(labelId) &&
-        !MESSAGING_GMAIL_FOLDERS_WITH_CATEGORY_EXCLUSIONS.includes(labelId),
+        isGmailCustomLabel(labelId),
     );
 
     if (messageIsInSyncedCustomFolder) {

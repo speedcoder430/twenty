@@ -4,15 +4,21 @@ import {
 } from 'src/modules/messaging/common/standard-objects/message-channel.workspace-entity';
 import { MESSAGING_GMAIL_EXCLUDED_CATEGORY_LABELS } from 'src/modules/messaging/message-import-manager/drivers/gmail/constants/messaging-gmail-excluded-category-labels.constant';
 import { MESSAGING_GMAIL_FOLDERS_WITH_CATEGORY_EXCLUSIONS } from 'src/modules/messaging/message-import-manager/drivers/gmail/constants/messaging-gmail-folders-with-category-exclusions.constant';
-import { type MessageWithParticipants } from 'src/modules/messaging/message-import-manager/types/message';
 
-export const filterGmailMessagesByFolderPolicy = (
-  messages: MessageWithParticipants[],
+type MessageWithLabelIds = {
+  externalId: string;
+  labelIds?: string[];
+};
+
+export const filterGmailMessagesByFolderPolicy = <
+  TMessage extends MessageWithLabelIds,
+>(
+  messages: TMessage[],
   messageChannel: Pick<
     MessageChannelWorkspaceEntity,
     'messageFolders' | 'messageFolderImportPolicy'
   >,
-): MessageWithParticipants[] => {
+): TMessage[] => {
   const { messageFolders, messageFolderImportPolicy } = messageChannel;
 
   if (messageFolderImportPolicy === MessageFolderImportPolicy.ALL_FOLDERS) {
